@@ -7,6 +7,8 @@ The first experiment is a workflow ablation:
 - `direct`: prompt -> Boogu generator
 - `rewrite_default`: prompt -> Boogu default instruction rewriter -> generator
 - `rewrite_ppt`: prompt -> Boogu PPT/design rewriter -> generator
+- `search_manual`: prompt + curated factual notes -> Boogu generator
+- `sketch_svg`: prompt + generated SVG sketch -> Boogu Edit generator
 
 This repo is intentionally GPU-optional. You can debug command generation and
 manifest logging locally with `--dry-run`, then run the same config on a GPU
@@ -93,6 +95,31 @@ For each prompt category, compare whether rewrite helps or hurts:
 
 This becomes the seed data for a GenRouter-style routing policy.
 
+## Boundary Experiment
+
+After the smoke test, use the boundary set to test when DirectGen is no longer
+enough:
+
+```bash
+python -m src.bg_harness.run_workflow_ablation \
+  --boogu-root /path/to/Boogu-Image \
+  --cases data/cases_boundary_v1.jsonl \
+  --generators turbo \
+  --workflows direct search_manual sketch_svg \
+  --execute
+```
+
+Interpretation:
+
+- `search_manual` should help when the problem is missing world knowledge.
+- `sketch_svg` should help when the problem is layout, counting, or spatial structure.
+- If `direct` already wins, that case should stay on the cheap route.
+
+Note: `sketch_svg` uses `models/Boogu-Image-0.1-Edit`, because it passes the
+generated SVG sketch as a reference image. With `--generators turbo`, it uses
+`models/Boogu-Image-0.1-Edit-Turbo`; with `--generators base`, it uses
+`models/Boogu-Image-0.1-Edit`.
+
 ## Internal Boogu Dependencies
 
 This starter does not require Boogu internal code, prompts, or datasets. It uses
@@ -101,4 +128,3 @@ public Boogu inference scripts and public checkpoints.
 Internal resources are only needed if you want to reproduce official Boogu Arena
 numbers, official prompt sets, official human preference logs, training data,
 reward models, or unpublished multi-reference training/evaluation pipelines.
-
