@@ -1,0 +1,13 @@
+{"case_id":"simple_cat_001","task_type":"simple","prompt":"A cozy photo of a gray British Shorthair cat sitting beside a window on a rainy afternoon, soft natural light, calm mood."}
+{"case_id":"photo_product_001","task_type":"photography_product","prompt":"A premium product photo of a matte black wireless headphone on a reflective glass table, subtle rim lighting, clean commercial style."}
+{"case_id":"poster_cn_001","task_type":"poster_text","prompt":"Design a clean Chinese event poster for a weekend coffee tasting. The main title text must read 周末咖啡品鉴会, with smaller text 9月12日 14:00 and 城市书房一层."}
+{"case_id":"poster_en_001","task_type":"poster_text","prompt":"Create a minimal English poster for a jazz night. The large title must read BLUE HOUR JAZZ, with smaller text Friday 8 PM and Riverside Club."}
+{"case_id":"ppt_slide_001","task_type":"layout_ppt","prompt":"Create a 16:9 presentation slide about agentic image generation. Include a clear title, three compact bullet points, and a simple workflow diagram from Prompt to Plan to Image."}
+{"case_id":"infographic_001","task_type":"layout_infographic","prompt":"Create a clean infographic explaining the difference between DirectGen, RewriteGen, and SearchGen. Use three side-by-side columns and concise labels."}
+{"case_id":"world_knowledge_001","task_type":"world_knowledge","prompt":"Create an accurate image of the Hong Kong Observation Wheel at sunset, with the waterfront skyline visible behind it."}
+{"case_id":"world_knowledge_002","task_type":"world_knowledge","prompt":"Create an image of a traditional Cantonese dim sum restaurant table with har gow, siu mai, char siu bao, tea cups, and bamboo steamers."}
+{"case_id":"spatial_001","task_type":"spatial","prompt":"A red cube is on the left of a blue sphere, and a small green cone is behind both of them. Render as a clean studio scene."}
+{"case_id":"multi_constraint_001","task_type":"multi_constraint","prompt":"A realistic desk scene with exactly three notebooks, one silver laptop, a transparent water bottle, and a yellow sticky note that says TODO."}
+{"case_id":"style_transfer_like_001","task_type":"style","prompt":"A futuristic city street in the style of a delicate watercolor sketch, with soft pastel colors and visible paper texture."}
+{"case_id":"dense_text_001","task_type":"dense_text","prompt":"Create a realistic printed restaurant menu board with five readable items: Espresso, Latte, Mocha, Lemon Tea, Matcha Cake. Include prices next to each item."}
+

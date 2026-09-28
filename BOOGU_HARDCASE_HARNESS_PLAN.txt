@@ -1,0 +1,504 @@
+Boogu hardcase prompts -> Bg-harness integration plan
+=====================================================
+
+Goal
+----
+
+Use the existing Bg-harness repo as the outer orchestration layer for Boogu-Image
+agentic image generation experiments.
+
+The new input batch is assumed to live at:
+
+  Boogu-Image/outputs/hardcase/selected.jsonl
+
+Do not start by changing Boogu-Image internals. Treat Boogu-Image as a generator
+backend, and let Bg-harness own case normalization, workflow ablation, logging,
+evaluation, and failure analysis.
+
+
+Current Bg-harness state
+------------------------
+
+The repo already has a good MVP:
+
+  src/bg_harness/run_workflow_ablation.py
+
+It currently supports:
+
+  direct
+    prompt -> Boogu generator
+
+  rewrite_default
+    prompt -> Boogu default instruction rewriter -> generator
+
+  rewrite_ppt
+    prompt -> Boogu PPT/design rewriter -> generator
+
+  search_manual
+    prompt + curated search_facts -> generator
+
+  sketch_svg
+    prompt + generated SVG sketch -> Boogu Edit generator
+
+It also writes a manifest to:
+
+  Boogu-Image/outputs/harness_workflow_ablation/<run_id>/manifest.jsonl
+
+This is exactly the right place to start. The first contribution should be a
+hardcase ingestion and workflow-ablation plan, not a large rewrite.
+
+
+Recommended first PR scope
+--------------------------
+
+Make one small, reviewable PR with three parts:
+
+1. Add a hardcase normalization script.
+
+   Proposed file:
+
+     src/bg_harness/prepare_hardcases.py
+
+   Purpose:
+
+     Read Boogu-Image/outputs/hardcase/selected.jsonl and write a normalized
+     JSONL file under Bg-harness:
+
+       data/cases_hardcase_selected.jsonl
+
+   Normalized schema should match the existing runner:
+
+     {
+       "case_id": "hardcase_000001",
+       "task_type": "hardcase",
+       "prompt": "...",
+       "source": "Boogu-Image/outputs/hardcase/selected.jsonl",
+       "tags": [],
+       "difficulty": null,
+       "raw": {...}
+     }
+
+   Keep the original record in raw so the team can recover extra metadata later.
+
+2. Add docs and dry-run commands.
+
+   Add a README section or a separate txt/md file showing:
+
+     python -m src.bg_harness.prepare_hardcases \
+       --input ../Boogu-Image/outputs/hardcase/selected.jsonl \
+       --output data/cases_hardcase_selected.jsonl
+
+     python -m src.bg_harness.run_workflow_ablation \
+       --boogu-root ../Boogu-Image \
+       --cases data/cases_hardcase_selected.jsonl \
+       --generators turbo \
+       --workflows direct rewrite_default rewrite_ppt \
+       --dry-run
+
+3. Do not add judge/Navigator in the same first PR.
+
+   First make sure the hardcase prompts can be loaded, commands can be generated,
+   and manifests are stable. Then build evaluation and closed-loop workflows as
+   separate PRs.
+
+
+How to normalize selected.jsonl
+-------------------------------
+
+Before coding, inspect 20 lines:
+
+  head -n 20 ../Boogu-Image/outputs/hardcase/selected.jsonl
+
+or on PowerShell:
+
+  Get-Content ../Boogu-Image/outputs/hardcase/selected.jsonl -TotalCount 20
+
+Then identify the prompt field. Common possibilities:
+
+  prompt
+  instruction
+  text
+  user_prompt
+  original_prompt
+  rewritten_prompt
+
+The normalization script should:
+
+  - accept --prompt-field if the field name is known;
+  - otherwise auto-detect from the common names above;
+  - fail loudly if no prompt field exists;
+  - generate stable case_id values if missing;
+  - preserve source metadata in raw;
+  - optionally copy useful fields such as category, tags, reason, difficulty,
+    failure_type, selected_by, or notes if they exist.
+
+Suggested case_id rule:
+
+  If record has case_id/id/uid, use it with a hardcase_ prefix if needed.
+  Otherwise use hardcase_000001, hardcase_000002, ...
+
+Suggested task_type rule:
+
+  If the record has category/task_type, map it.
+  Otherwise use "hardcase".
+
+Later, task_type can be refined into:
+
+  text_rendering
+  dense_text
+  spatial
+  counting
+  world_knowledge
+  poster_design
+  ppt_design
+  multi_constraint
+  style
+  editing
+  multi_ref
+
+
+First experiment to run on hardcases
+------------------------------------
+
+Start with a cheap routing question:
+
+  Does Boogu's instruction rewriter help or hurt hardcase prompts?
+
+Run:
+
+  direct
+  rewrite_default
+  rewrite_ppt
+
+Use turbo first because it is cheap:
+
+  python -m src.bg_harness.run_workflow_ablation \
+    --boogu-root ../Boogu-Image \
+    --cases data/cases_hardcase_selected.jsonl \
+    --generators turbo \
+    --workflows direct rewrite_default rewrite_ppt \
+    --run-id hardcase_rewrite_ablation_v1 \
+    --dry-run
+
+On the GPU server, switch to:
+
+  --execute
+
+Expected output:
+
+  Boogu-Image/outputs/harness_workflow_ablation/hardcase_rewrite_ablation_v1/
+    manifest.jsonl
+    images/
+
+Interpretation:
+
+  - If direct wins on simple prompts, keep them on the cheap route.
+  - If rewrite_default wins on underspecified prompts, mark them as rewrite-needed.
+  - If rewrite_ppt wins on poster/PPT/dense-text prompts, route design tasks there.
+  - If all three fail, the case likely needs search, sketch, verify, or stronger
+    data/model work.
+
+
+How to add SearchGen
+--------------------
+
+Current search_manual only uses curated search_facts if they already exist in
+the case file. That is a good baseline, but real SearchGen should become:
+
+  prompt -> gap detector -> search plan -> retrieve -> filter -> integrate -> Boogu
+
+Recommended incremental implementation:
+
+PR 2:
+
+  Add a "search_auto" workflow, but keep it simple.
+
+  New files:
+
+    src/bg_harness/search_tools.py
+    src/bg_harness/workflows/search_auto.py
+
+  For each case:
+
+    1. Detect whether external knowledge is needed.
+    2. Generate 1-3 search queries.
+    3. Save search_plan.json.
+    4. Retrieve snippets or image references.
+    5. Filter to minimal useful facts.
+    6. Create enriched_prompt.
+    7. Call the existing Boogu runner command builder.
+
+Required logs:
+
+  outputs/.../<case_id>/search_plan.json
+  outputs/.../<case_id>/search_results.json
+  outputs/.../<case_id>/selected_evidence.json
+  manifest.jsonl field: generation_prompt
+
+Evaluation question:
+
+  Did search fix knowledge gaps, or did it inject reference noise?
+
+Do not search for every hardcase. Add routing gates:
+
+  - Use search for real entities, recent events, locations, named products,
+    cultural symbols, IP/characters, UI screenshots, charts, or factual designs.
+  - Skip search for simple aesthetic prompts, generic objects, or style-only
+    prompts.
+
+
+How to add SketchGen
+--------------------
+
+Current sketch_svg handles two hardcoded sketch types. Extend this into a real
+layout planner.
+
+Recommended PR 3:
+
+  Add a layout_json workflow before generating SVG.
+
+  New files:
+
+    src/bg_harness/sketch_tools.py
+    src/bg_harness/workflows/sketch_layout.py
+
+New intermediate schema:
+
+  {
+    "canvas": {"width": 1024, "height": 1024},
+    "objects": [
+      {
+        "id": "main_subject",
+        "label": "elderly man",
+        "bbox": [360, 240, 300, 560],
+        "role": "foreground"
+      }
+    ],
+    "relations": [
+      "trash can is left background",
+      "traffic light is right background"
+    ],
+    "text_regions": []
+  }
+
+Pipeline:
+
+  prompt -> layout_json -> SVG/PNG sketch -> Boogu Edit/TI2I -> output image
+
+Use this for:
+
+  spatial relation
+  exact counting
+  poster/PPT layout
+  infographic layout
+  multi-object composition
+
+Required logs:
+
+  layout.json
+  sketch.svg
+  sketch.png if rasterized
+  final image
+
+Evaluation question:
+
+  Did the layout planner produce the right structure?
+  Did Boogu follow the sketch?
+
+
+How to add VerifyGen
+--------------------
+
+VerifyGen is the next high-value step after workflow ablation.
+
+Recommended PR 4:
+
+  Add an evaluator that produces checkpoint-level JSON.
+
+  New files:
+
+    src/bg_harness/judge.py
+    src/bg_harness/run_judge.py
+
+Each normalized case should optionally contain:
+
+  checklist:
+    - "The image contains exactly three notebooks."
+    - "The sticky note text reads TODO."
+    - "The laptop is silver."
+
+Judge output:
+
+  {
+    "case_id": "...",
+    "image_path": "...",
+    "score": 0.67,
+    "pass": false,
+    "checks": [
+      {
+        "criterion": "The sticky note text reads TODO.",
+        "passed": false,
+        "severity": "major",
+        "reason": "The note is visible but text is unreadable."
+      }
+    ]
+  }
+
+Use any available VLM judge first. The exact model is less important than a
+stable schema and repeatable logs.
+
+After this exists, add a "verify_refine" workflow:
+
+  prompt -> Boogu -> judge -> if failed, create refine prompt -> Boogu again
+
+Keep max rounds low:
+
+  max_rounds = 2 or 3
+
+Required logs:
+
+  round_0.png
+  judge_0.json
+  refine_prompt_1.txt
+  round_1.png
+  judge_1.json
+  trace.jsonl
+
+
+How to add Navigator
+--------------------
+
+Navigator should not be the first change. It depends on Judge.
+
+Recommended PR 5:
+
+  Add "navigator" as a loop workflow.
+
+At each round, choose one action:
+
+  STOP
+    The current image is good enough.
+
+  REFINE
+    The image is mostly correct; preserve structure and fix local errors.
+
+  REGENERATE
+    The image has a global structure failure; rerun with a stronger prompt,
+    different seed, or different generator.
+
+Action schema:
+
+  {
+    "action": "REFINE",
+    "reason": "Identity is correct, but the requested blue coat is missing.",
+    "next_prompt": "Keep the same person, pose, and background. Change only..."
+  }
+
+Trace schema:
+
+  {
+    "round": 1,
+    "prompt": "...",
+    "image_path": "...",
+    "judge_path": "...",
+    "action": "REFINE",
+    "next_prompt": "..."
+  }
+
+Evaluation question:
+
+  Does the loop improve peak score without destroying already-correct outputs?
+
+Use Generation Navigator's core idea:
+
+  Optimize not only final quality, but also peak quality, retention, and
+  efficiency.
+
+
+Hardcase triage matrix
+----------------------
+
+After the first rewrite ablation, label each hardcase by failure type:
+
+  Rewrite-needed
+    The prompt is underspecified or ambiguous.
+    Try rewrite_default or rewrite_ppt.
+
+  Search-needed
+    The prompt contains named entities, places, products, characters, recent
+    facts, UI, chart, or cultural details.
+    Try search_manual or search_auto.
+
+  Sketch-needed
+    The prompt depends on exact layout, counting, object positions, diagrams,
+    posters, PPT pages, or infographics.
+    Try sketch_svg or sketch_layout.
+
+  Verify-needed
+    The prompt has many constraints and likely needs iterative correction.
+    Try verify_refine.
+
+  Model-limited
+    The prompt remains bad after rewrite/search/sketch/verify.
+    Save it as data/model improvement evidence.
+
+
+Recommended milestones
+----------------------
+
+Milestone 1: Hardcase ingestion
+
+  - selected.jsonl can be normalized into data/cases_hardcase_selected.jsonl.
+  - dry-run produces a complete manifest.
+  - no GPU required.
+
+Milestone 2: Rewrite ablation
+
+  - direct/rewrite_default/rewrite_ppt are run on hardcases.
+  - manifest includes all generated image paths and prompts.
+  - 20-50 cases are manually reviewed.
+
+Milestone 3: Diagnostic labels
+
+  - Each reviewed hardcase gets a failure_type.
+  - The team can say which fraction needs search, sketch, verify, or model work.
+
+Milestone 4: SearchGen and SketchGen prototypes
+
+  - search_auto exists for knowledge cases.
+  - sketch_layout exists for spatial/layout cases.
+  - intermediate artifacts are saved.
+
+Milestone 5: VerifyGen and Navigator
+
+  - judge outputs checkpoint-level JSON.
+  - verify_refine improves at least some hardcases.
+  - navigator records STOP/REFINE/REGENERATE decisions.
+
+
+What not to do first
+--------------------
+
+Do not:
+
+  - edit Boogu-Image pipeline internals before the harness proves the need;
+  - build a large agent framework before the case schema and manifest are stable;
+  - search every prompt blindly;
+  - judge only with a single overall score;
+  - overwrite selected.jsonl;
+  - mix hardcase ingestion, search, sketch, judge, and navigator into one huge PR.
+
+
+Suggested team-facing pitch
+---------------------------
+
+I propose to first integrate the selected hardcase prompts into Bg-harness as a
+normalized JSONL dataset, then run a Direct vs Rewrite ablation on Boogu Turbo.
+This gives us a cheap map of where Boogu's current rewriter helps or hurts. From
+there, we can route failures into SearchGen for knowledge gaps, SketchGen for
+layout/spatial/counting failures, and VerifyGen/Navigator for multi-constraint
+cases that need iterative correction. The key deliverable is not just generated
+images, but a reproducible manifest and trace for each case, so failures can be
+assigned to prompt ambiguity, missing knowledge, layout planning, generation, or
+verification.
+

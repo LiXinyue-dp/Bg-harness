@@ -1,0 +1,656 @@
+Bg-harness next-step plan for Boogu agentic evaluation
+=====================================================
+
+Context
+-------
+
+Boogu-Image-0.1 is not a plain prompt-to-image model. It already has a
+lightweight agentic front-end:
+
+  prompt -> instruction reasoner / rewriter -> generator
+
+Bg-harness should therefore not spend its next effort re-implementing another
+generic VLM prompt rewrite. The useful question is sharper:
+
+  Where is Boogu 0.1's existing rewriter enough, and where do hardcases require
+  external search, executable layout, verification, or closed-loop navigation?
+
+The immediate input batch is:
+
+  Boogu-Image/outputs/hardcase/selected.jsonl
+
+The next work should turn that batch into a reproducible experiment pipeline.
+
+
+Guiding principle
+-----------------
+
+Treat Boogu as the generator backend and Bg-harness as the agentic experiment
+controller.
+
+Boogu should do:
+
+  instruction + optional reference images -> output image
+
+Bg-harness should do:
+
+  case normalization
+  workflow selection
+  command construction
+  intermediate artifact logging
+  judge/checkpoint evaluation
+  failure attribution
+  routing recommendation
+
+This separation keeps the harness easy to review and avoids changing
+Boogu-Image internals before the hardcase evidence justifies it.
+
+
+Why the next step is not "add a bigger rewriter"
+------------------------------------------------
+
+Boogu already has:
+
+  rewrite_default
+  rewrite_ppt
+  local instruction rewriter
+  remote DashScope rewriting
+  save_rewritten_instruction
+
+So another prompt-only VLM rewrite would mostly duplicate Boogu 0.1.
+
+The missing agentic capabilities are:
+
+  SearchGen
+    External evidence and knowledge-boundary detection.
+
+  SketchGen
+    Executable layout or scene state for spatial/layout/counting prompts.
+
+  VerifyGen
+    Structured judge output and checkpoint-level failure detection.
+
+  Navigator
+    State-aware STOP / REFINE / REGENERATE decisions over multiple rounds.
+
+These should be added only after the hardcase dataset is normalized and the
+Direct vs Boogu-Rewrite baseline is measured.
+
+
+Milestone 1: hardcase ingestion
+-------------------------------
+
+Goal:
+
+  Convert Boogu-Image/outputs/hardcase/selected.jsonl into a normalized
+  Bg-harness case file.
+
+Add:
+
+  src/bg_harness/prepare_hardcases.py
+
+Output:
+
+  data/cases_hardcase_selected.jsonl
+
+Minimum normalized schema:
+
+  {
+    "case_id": "hardcase_000001",
+    "task_type": "hardcase",
+    "prompt": "...",
+    "source": "Boogu-Image/outputs/hardcase/selected.jsonl",
+    "capability_tags": [],
+    "operators": [],
+    "hard_factors": [],
+    "checklist": [],
+    "raw": {...}
+  }
+
+Implementation details:
+
+  1. Accept --input and --output.
+  2. Accept optional --prompt-field.
+  3. If --prompt-field is absent, auto-detect one of:
+
+       prompt
+       instruction
+       text
+       user_prompt
+       original_prompt
+
+  4. If no prompt field is found, fail loudly with a line number.
+  5. Preserve every original record under raw.
+  6. Generate stable case_id values if no case_id/id/uid exists.
+  7. Keep the first version simple; do not call LLMs in this script.
+
+Reason:
+
+  Without a stable case schema, SearchGen, SketchGen, VerifyGen, and Navigator
+  will each invent their own fields and the harness will become hard to compare.
+
+Acceptance checks:
+
+  python -m src.bg_harness.prepare_hardcases \
+    --input ../Boogu-Image/outputs/hardcase/selected.jsonl \
+    --output data/cases_hardcase_selected.jsonl
+
+  python -m src.bg_harness.run_workflow_ablation \
+    --boogu-root ../Boogu-Image \
+    --cases data/cases_hardcase_selected.jsonl \
+    --generators turbo \
+    --workflows direct rewrite_default rewrite_ppt \
+    --dry-run
+
+Expected:
+
+  - normalized JSONL exists;
+  - dry-run completes;
+  - manifest rows are written;
+  - no GPU is required.
+
+
+Milestone 2: Boogu rewriter boundary baseline
+---------------------------------------------
+
+Goal:
+
+  Measure what Boogu 0.1's existing agentic rewriter already solves.
+
+Run workflows:
+
+  direct
+  rewrite_default
+  rewrite_ppt
+
+Run generator first:
+
+  turbo
+
+Later add:
+
+  base
+
+Suggested command:
+
+  python -m src.bg_harness.run_workflow_ablation \
+    --boogu-root ../Boogu-Image \
+    --cases data/cases_hardcase_selected.jsonl \
+    --generators turbo \
+    --workflows direct rewrite_default rewrite_ppt \
+    --run-id hardcase_rewriter_boundary_v1 \
+    --execute
+
+Reason:
+
+  This creates the baseline for whether additional agentic tools are necessary.
+  If rewrite_default/rewrite_ppt already fix a category, do not route that
+  category to heavier SearchGen or Navigator by default.
+
+Manual review labels:
+
+  direct_good
+  rewrite_helped
+  rewrite_hurt
+  all_failed
+  unclear
+
+Recommended review output:
+
+  data/reviews/hardcase_rewriter_boundary_v1_review.jsonl
+
+Review schema:
+
+  {
+    "case_id": "...",
+    "best_workflow": "direct",
+    "label": "rewrite_hurt",
+    "failure_type": "over_specification",
+    "notes": "PPT rewrite added layout details not requested by the user."
+  }
+
+Acceptance checks:
+
+  - at least 50 hardcases manually reviewed;
+  - each reviewed case has best_workflow and failure_type;
+  - summary counts are available by task_type/failure_type.
+
+
+Milestone 3: capability tagging and checkpoint seeds
+----------------------------------------------------
+
+Goal:
+
+  Turn hardcases from a flat prompt list into a diagnostic benchmark seed.
+
+Add:
+
+  src/bg_harness/tag_hardcases.py
+
+This can start as a rule-based or manually assisted script. LLM tagging can be
+added later, but the output schema should be stable from the beginning.
+
+Use tags inspired by the papers:
+
+  From SearchGen:
+
+    world_knowledge
+    named_entity
+    recent_or_long_tail
+    search_may_hurt
+
+  From GenClaw / SpatialGuard:
+
+    spatial
+    layout
+    exact_counting
+    poster_or_ppt
+    chart_or_diagram
+
+  From TRACE-Bench:
+
+    anchor
+    disentangle
+    apply
+    compose
+
+  From MultiBanana:
+
+    multi_reference
+    cross_domain
+    scale_view_mismatch
+    rare_concept
+    multilingual
+
+  From MICON-Bench:
+
+    identity
+    structure
+    cross_ref
+    causality
+    text
+    usability
+
+Output fields:
+
+  capability_tags
+  operators
+  hard_factors
+  checklist
+
+Reason:
+
+  Agentic routing only makes sense if the harness knows what kind of failure a
+  case is testing. Otherwise every hardcase looks equally hard and every tool
+  looks equally plausible.
+
+Acceptance checks:
+
+  - every case has at least one capability_tag;
+  - spatial/layout/counting cases have at least one checklist item;
+  - world_knowledge cases are separable from generic aesthetic prompts.
+
+
+Milestone 4: real SearchGen, not rewrite-only SearchGen
+-------------------------------------------------------
+
+Goal:
+
+  Add a SearchGen workflow that uses external evidence.
+
+Current state:
+
+  search_manual enriches the prompt only when search_facts already exist.
+
+Next workflow:
+
+  search_auto
+
+Pipeline:
+
+  prompt
+    -> knowledge gap detector
+    -> SKIP / WEB / IMAGE / BOTH decision
+    -> query planner
+    -> retrieval
+    -> evidence filter
+    -> visual-fact integration
+    -> Boogu
+
+Important:
+
+  SearchGen should not be equivalent to VLM rewrite. If there is no external
+  evidence, call it rewrite, not search.
+
+Required artifacts per case:
+
+  search_plan.json
+  raw_search_results.json
+  selected_evidence.json
+  enriched_prompt.txt
+
+Required manifest fields:
+
+  need_search
+  search_mode
+  search_queries
+  selected_evidence_path
+  search_skipped_reason
+  generation_prompt
+
+Routing rule:
+
+  Use search_auto for named entities, real locations, products, culture/IP,
+  recent events, UI, factual charts, or prompts whose correctness depends on
+  world knowledge.
+
+  Skip search for generic style, simple objects, common scenes, or purely
+  aesthetic prompts.
+
+Reason:
+
+  SearchGen's paper contribution is knowledge-boundary control: search only when
+  the generator likely lacks the knowledge, and filter evidence to avoid concept
+  corruption or copy effect.
+
+Acceptance checks:
+
+  - search_auto can choose SKIP for some cases;
+  - evidence is saved separately from enriched prompt;
+  - manual review can distinguish "search fixed knowledge" from "search injected
+    noise".
+
+
+Milestone 5: SketchGen for layout, spatial, and counting failures
+-----------------------------------------------------------------
+
+Goal:
+
+  Expand sketch_svg from hardcoded SVG templates into a structured layout
+  workflow.
+
+Next workflow:
+
+  sketch_layout
+
+Pipeline:
+
+  prompt
+    -> layout_json
+    -> SVG or PNG sketch
+    -> Boogu Edit/TI2I as structural reference
+    -> output image
+    -> spatial/layout checkpoint judge
+
+Layout schema:
+
+  {
+    "canvas": {"width": 1024, "height": 1024},
+    "objects": [
+      {
+        "id": "object_1",
+        "label": "red cube",
+        "bbox": [180, 420, 220, 220],
+        "role": "foreground"
+      }
+    ],
+    "relations": [
+      ["red_cube", "left_of", "blue_sphere"]
+    ],
+    "text_regions": []
+  }
+
+Required artifacts:
+
+  layout.json
+  sketch.svg
+  sketch.png if rasterized
+  final image
+
+Reason:
+
+  GenClaw and SpatialGuard show that prompt-only control is weak for layout,
+  geometry, counting, and text regions. A visible intermediate state lets the
+  team separate planner failures from generator failures.
+
+Acceptance checks:
+
+  - at least 20 spatial/layout hardcases generate layout.json;
+  - sketch is visually inspectable;
+  - manifest records sketch path;
+  - reviewer can say whether layout planner or Boogu following failed.
+
+
+Milestone 6: VerifyGen with checkpoint-level judge
+--------------------------------------------------
+
+Goal:
+
+  Add structured evaluation before adding multi-round navigation.
+
+Add:
+
+  src/bg_harness/judge.py
+  src/bg_harness/run_judge.py
+
+Judge input:
+
+  original prompt
+  optional reference images
+  generated image
+  checklist
+
+Judge output:
+
+  {
+    "case_id": "...",
+    "image_path": "...",
+    "overall_score": 0.0,
+    "pass": false,
+    "checks": [
+      {
+        "criterion": "...",
+        "passed": false,
+        "severity": "major",
+        "reason": "..."
+      }
+    ]
+  }
+
+Use checkpoint dimensions:
+
+  prompt_following
+  identity
+  attribute_binding
+  spatial_relation
+  counting
+  text_rendering
+  knowledge_fidelity
+  image_quality
+
+Reason:
+
+  Without checkpoint-level judge output, VerifyGen and Navigator are just retry
+  loops. The judge creates the state signal needed for agentic control.
+
+Acceptance checks:
+
+  - judge can score outputs from Milestone 2;
+  - failed checkpoints are machine-readable;
+  - summary can group failures by dimension.
+
+
+Milestone 7: Navigator after judge exists
+-----------------------------------------
+
+Goal:
+
+  Add a closed-loop workflow that chooses STOP, REFINE, or REGENERATE based on
+  the current state.
+
+Next workflow:
+
+  navigator_v1
+
+Loop:
+
+  round image
+    -> judge
+    -> action policy
+    -> STOP / REFINE / REGENERATE
+
+Action schema:
+
+  {
+    "action": "REFINE",
+    "reason": "The layout is correct but the text is unreadable.",
+    "next_prompt": "Preserve the current layout. Improve only the menu text..."
+  }
+
+Trace output:
+
+  trace.jsonl
+  round_0.png
+  judge_0.json
+  action_0.json
+  round_1.png
+  judge_1.json
+
+Stop conditions:
+
+  - judge pass is true;
+  - max_rounds is reached;
+  - score drops twice in a row;
+  - action policy returns STOP.
+
+Metrics:
+
+  final_score
+  peak_score
+  retention_score
+  rounds_used
+  improved_over_round_0
+
+Reason:
+
+  Generation Navigator's lesson is that the system should not blindly refine.
+  It should preserve good states, avoid destructive edits, and regenerate only
+  when the global structure is wrong.
+
+Acceptance checks:
+
+  - navigator_v1 produces trace.jsonl;
+  - action decisions are inspectable;
+  - at least some cases improve over direct/rewrite baselines;
+  - cases that degrade are analyzed, not hidden.
+
+
+Milestone 8: GenRouter-style routing report
+-------------------------------------------
+
+Goal:
+
+  Convert experiment results into a routing recommendation for Boogu hardcases.
+
+For each case, aggregate:
+
+  workflow
+  generator
+  score
+  latency_sec
+  search_calls
+  rounds_used
+  failure_type
+  cost proxy
+
+Routing recommendation examples:
+
+  direct_turbo
+    Use for simple prompts where rewrite does not help.
+
+  rewrite_ppt_turbo
+    Use for poster, PPT, and dense-text prompts where prompt specificity helps.
+
+  search_auto_turbo
+    Use for world-knowledge prompts where direct/rewrite hallucinate.
+
+  sketch_layout_edit
+    Use for spatial, layout, exact counting, and infographic prompts.
+
+  navigator_base
+    Reserve for high-value multi-constraint hardcases.
+
+Reason:
+
+  GenRouter's contribution is not just having many workflows. It learns when
+  each workflow is worth its cost. Bg-harness should produce the evidence needed
+  for that routing policy.
+
+Acceptance checks:
+
+  - one report summarizes best workflow by capability_tag;
+  - direct/rewrite/search/sketch/verify costs are visible;
+  - at least one recommendation says "do not use heavier agentic workflow for
+    this category."
+
+
+Suggested PR sequence
+---------------------
+
+PR 1:
+
+  prepare_hardcases.py
+  data/cases_hardcase_selected.jsonl generation docs
+  dry-run validation
+
+PR 2:
+
+  rewriter boundary baseline docs
+  optional manual review template
+
+PR 3:
+
+  capability tagging and checklist seeds
+
+PR 4:
+
+  search_auto with real external evidence and saved search artifacts
+
+PR 5:
+
+  sketch_layout with layout.json and sketch artifacts
+
+PR 6:
+
+  judge.py and checkpoint-level evaluation
+
+PR 7:
+
+  navigator_v1 loop
+
+PR 8:
+
+  routing report and hardcase analysis
+
+
+Immediate next task
+-------------------
+
+Implement PR 1 first.
+
+Why:
+
+  It is the smallest useful step.
+  It does not require GPU.
+  It does not require choosing a VLM judge yet.
+  It makes the hardcase batch usable by the existing runner.
+  It creates a stable contract for every later agentic workflow.
+
+Definition of done for PR 1:
+
+  1. selected.jsonl can be converted into data/cases_hardcase_selected.jsonl.
+  2. The normalized file has case_id, task_type, prompt, source, and raw.
+  3. Existing run_workflow_ablation.py can dry-run over the normalized file.
+  4. README or a small docs file shows the exact commands.
+  5. No Boogu-Image internal code is modified.
+

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime outputs can be large and are environment-specific.
+outputs/
+runs/
+*.log
+
+# Boogu checkpoints should stay outside this harness repo.
+models/
+
